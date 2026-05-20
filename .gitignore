@@ -4,4 +4,5 @@ enhanced_messages.json
 message_timestamps.json
 enhanced_messages.json*
 *bak*
-.DS_Store
+.DS_Storepresets.json
+presets.json
