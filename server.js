@@ -137,6 +137,35 @@ function sanitizeForLog(value) {
   return value;
 }
 
+function summarizeMessageForLog(msg) {
+  const parts = Array.isArray(msg?.content) ? msg.content : [msg?.content];
+  const textChars = parts.reduce((sum, part) => sum + getTextFromContentPart(part).length, 0);
+  return {
+    role: msg?.role || "",
+    content_type: Array.isArray(msg?.content) ? "multimodal" : typeof msg?.content,
+    text_chars: textChars || normalizeContentToText(msg?.content).length,
+    image_parts: parts.filter(isImageContentPart).length,
+    file_parts: parts.filter(isFileContentPart).length,
+    tool_calls: Array.isArray(msg?.tool_calls) ? msg.tool_calls.length : 0
+  };
+}
+
+function summarizeMessagesForLog(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  const roles = {};
+  let imageParts = 0;
+  let fileParts = 0;
+  let textChars = 0;
+  for (const msg of list) {
+    const item = summarizeMessageForLog(msg);
+    roles[item.role] = (roles[item.role] || 0) + 1;
+    imageParts += item.image_parts;
+    fileParts += item.file_parts;
+    textChars += item.text_chars;
+  }
+  return { total: list.length, roles, text_chars: textChars, image_parts: imageParts, file_parts: fileParts };
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -357,7 +386,8 @@ function appendSpecialEvent(content) {
   const newEvent = { role: "assistant", content, position: maxPos + 0.5 };
   timeline.push(newEvent);
   saveTimeline(timeline);
-  console.log(`\n已记录特殊事件 (position ${newEvent.position}): ${content}\n`);
+  // 批注 2026-07-15：特殊事件可能包含推送正文；日志只记录长度，避免公开部署时泄漏私密内容。
+  console.log(`\n已记录特殊事件 (position ${newEvent.position}, chars ${normalizeContentToText(content).length})\n`);
 }
 
 function stripPosition(messages) {
@@ -488,10 +518,14 @@ app.get("/v1/models", async (req, reply) => {
 app.post("/v1/chat/completions", async (req, reply) => {
   try {
     const body = req.body;
-    console.log("\n============================");
-    console.log("收到 Kelivo 完整请求 Body:");
-    console.log(JSON.stringify(sanitizeForLog(body), null, 2));
-    console.log("============================\n");
+    // 批注 2026-07-15：公开部署时日志不能默认写入完整上下文；
+    // 这里只保留请求摘要，避免 system prompt、记忆和聊天正文进入 pm2 日志。
+    console.log(JSON.stringify({
+      event: "kelivo_request",
+      model: body?.model || "",
+      stream: body?.stream === true,
+      messages: summarizeMessagesForLog(body?.messages || [])
+    }));
 
     const kelivoMessages = body.messages || [];
     const oldTimeline = loadTimeline();
@@ -529,7 +563,6 @@ app.post("/v1/chat/completions", async (req, reply) => {
     );
 
     console.log("本次注入的特殊事件数量:", oldEvents.length);
-    if (oldEvents.length > 0) console.log("示例事件内容:", oldEvents[0].content.substring(0, 80));
 
     for (const event of oldEvents) {
       const eventTime = extractTimestampWithMemory(event, tsDB);
@@ -548,9 +581,10 @@ app.post("/v1/chat/completions", async (req, reply) => {
 
 
 
-    // 调试打印
-    console.log("\n===== 转发给 LLM 的 Messages（前 10 条）=====\n");
-    console.log(JSON.stringify(sanitizeForLog(llmMessages.slice(0, 10)), null, 2));
+    console.log(JSON.stringify({
+      event: "llm_forward_summary",
+      messages: summarizeMessagesForLog(llmMessages)
+    }));
 
     // ---- 自动修复不完整的 tool 调用（双向清理） ----
     // 第一遍：标记需要移除的索引

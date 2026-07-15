@@ -205,6 +205,17 @@ function normalizeContentToText(content) {
   return "[非文本内容]";
 }
 
+function summarizeWakeMessages(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  const roles = {};
+  let chars = 0;
+  for (const msg of list) {
+    roles[msg?.role || ""] = (roles[msg?.role || ""] || 0) + 1;
+    chars += normalizeContentToText(msg?.content).length;
+  }
+  return { total: list.length, roles, text_chars: chars };
+}
+
 function weatherCodeText(code) {
   const table = {
     0: "晴朗",
@@ -469,8 +480,10 @@ ${historyText}`
     }
   ];
 
-  console.log("\n===== WAKE MESSAGES =====\n");
-  console.log(JSON.stringify(wakeMessages, null, 2));
+  // 批注 2026-07-15：wake-up prompt 会包含最近聊天记录；
+  // 默认日志只写摘要，避免公开部署时把完整上下文刷进 pm2 日志。
+  console.log("\n===== WAKE MESSAGES SUMMARY =====\n");
+  console.log(JSON.stringify(summarizeWakeMessages(wakeMessages)));
 
   if (!process.env.TARGET_API_URL || !process.env.TARGET_API_KEY || !process.env.MODEL_NAME) {
     console.log("缺少 TARGET_API_URL / TARGET_API_KEY / MODEL_NAME，跳过本次唤醒");
@@ -503,12 +516,9 @@ ${historyText}`
     throw new Error(`模型请求失败（HTTP ${response.status}）：${responseText.slice(0, 300)}`);
   }
 
-  console.log("\nWake Result:\n");
-  console.log(JSON.stringify(data, null, 2));
-
   const rawAiText = normalizeContentToText(data.choices?.[0]?.message?.content).trim();
-  console.log("\nAI内容：\n");
-  console.log(rawAiText);
+  console.log("\nWake Result Summary:\n");
+  console.log(JSON.stringify({ choices: Array.isArray(data.choices) ? data.choices.length : 0, ai_text_chars: rawAiText.length }));
 
   const diaryResult = extractDiaryFromResponse(rawAiText);
   const diarySaved = appendDiaryEntry(diaryResult.diaryContent);
